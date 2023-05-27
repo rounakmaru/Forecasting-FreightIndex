@@ -1,0 +1,877 @@
+---
+title: "Freight Data - Forecasting"
+author: "Rounak Maru"
+format: html
+editor: visual
+embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+  error: false
+---
+
+```{r}
+#| include: false
+knitr::opts_chunk$set(
+  fig.align = "center"
+)
+
+library(tidyverse)
+library(rmarkdown)
+library(gapminder)
+library(janitor)
+library(lubridate)
+library(scales)
+library(gt)
+library(patchwork)
+library(kableExtra)
+library(data.table)
+library(corrplot)
+library(forecast)
+library(zoo)
+library(dplyr)
+library(tseries) # For ADF/KPSS tests
+library(tsibble)
+library(fable)
+library(feasts)
+# install.packages("fredr")
+library(fredr)
+
+```
+
+### Introduction
+
+1.  **ARIMA (Autoregressive Integrated Moving Average)** is a popular time-series model that is widely used for forecasting. It involves analyzing the autocorrelation and partial autocorrelation of the data to determine the appropriate order of differencing, autoregression, and moving average components. ARIMA can handle both stationary and non-stationary data, and is a widely used method for time-series forecasting.
+2.  **Meta Prophet** is a variation of the Prophet algorithm developed by Facebook's Data Science team. It is designed to handle time-series data with multiple seasonality patterns and trend changes. The model combines linear and non-linear components to create a flexible model that can capture the complexity of the data. Meta Prophet is known for its ability to produce accurate forecasts with minimal tuning and is a popular choice for time-series forecasting.
+3.  **Naive forecasting**, also known as simple or naive method, is a basic approach to forecasting that involves making predictions based solely on the historical values of the time series being analyzed. This method assumes that the future values of the time series will be the same as the most recent or average past values, without considering any other external factors that may influence the trend or seasonality of the data. Although this method is easy to implement and computationally efficient, it is often too simplistic to provide accurate forecasts for complex or volatile data, and may result in large errors when unexpected events or changes in the underlying patterns occur. Therefore, naive forecasting is typically used as a baseline or benchmark against which more advanced forecasting methods can be compared and evaluated.
+
+After creating the different forecast models, we will identify the one that fits our data the best, and create a final forecast
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+#reading the file
+freight <- read.csv("D://FreightIndex.csv")
+colnames(freight)
+
+freight$Date <- dmy(freight$Date)
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+
+freight <- freight %>%
+mutate(Date = yearmonth(Date)) %>%
+as_tsibble(index = Date)
+```
+
+### Section 1 Exploratory Data Analysis and Time series decomposition
+
+**Initial split of the data into training and test sets (approximately 70% in training) - all following analysis conducted on training set**
+
+The data we've is for 30 years and we can split it into training and testing, the first 25 years we've considered as training and last 5 we've considered as test, which is given below
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+freight_train = freight %>%
+    filter(Date<ymd('2018-01-01'))
+
+freight_test = freight %>%
+    filter(Date>=ymd('2018-01-01'))
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+
+tail(freight_train)
+
+```
+
+**Identification of the data source and brief description of the "data-generating process" based on visual analysis**
+
+Selected, including its source and how the data are published. Why did you decide on this dataset in particular?
+
+The foundation month for the Cass Freight Index is January 1990. Freight costs and cargo volumes from the whole Cass clientele are used to update the index each month. Volumes dont always match to the month when the associated shipments were made; instead, they indicate the month in which Cass processes transactions.The starting point in January 1990 is 1.00. The Index point for each succeeding month reflects the volume relative to the starting point of January 1990 for that month.
+
+It is realistic to expect that as the need for shipping develops globally, the demand will rise as well, but it is up to us to anticipate and comprehend the underlying economic considerations.It is an index, with base calculations beginning in January 1990.
+
+Each month's volumes are adjusted to provide an average 21-day work month. Adjustments also are made to compensate for business additions/deletions to the volume figures. These adjustments help normalize the data to provide a sound basis for ongoing monthly comparison.
+
+**Various summary statistics of the data as necessary**
+
+Let's plot a few plots like to see and understand our data better
+
+1.  Histogram
+2.  density plot
+3.  Violin plot
+4.  Boxplot
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,results='hide'}
+#| echo: false
+#| code-fold: true
+
+
+# hist <- freight_train %>%
+#   ggplot() +
+#   geom_histogram(aes(freight_train$Value)) +
+#   xlab("Frieght Index Value") +
+#   ylab("Count/Frequency") +
+#   ggtitle("Histogram of Freight Values")
+# theme_bw()
+# 
+# dens <- freight_train %>%
+#   ggplot() +
+#   geom_density(aes(freight_train$Value)) +
+#   xlab("Frieght Index Value") +
+#   ylab("Probability Density ") +
+#   ggtitle("Density Plot of Freight Values")
+# theme_bw()
+# 
+# violin <- freight_train %>%
+#   ggplot() +
+#   geom_violin(aes("",freight_train$Value)) +
+#   xlab("Frieght Index Value") +
+#   ylab("Count/Frequency") +
+#   ggtitle("Violin Plot of Freight Values")
+# theme_bw()
+# 
+# boxplot <- freight_train %>%
+#   ggplot() +
+#   geom_boxplot(aes("",freight_train$Value)) +
+#   ylab("Freight Index") +
+#   ggtitle("Box Plot of Freight Values")
+# theme_bw()
+```
+
+```{r}
+hist <- freight_train %>%
+      ggplot() +
+      geom_histogram(aes(Value)) +
+      theme_bw() +
+      labs(x = "Price")
+
+    dens <- freight_train %>%
+      ggplot() +
+      geom_density(aes(Value)) +
+      theme_bw() +
+      labs(x = "Price")
+
+    violin <- freight_train %>%
+      ggplot() +
+      geom_violin(aes("", Value)) +
+      theme_bw() +
+      labs(x = "Price", y = "")
+
+    boxplot <- freight_train %>%
+      ggplot() +
+      geom_boxplot(aes("", Value)) +
+      theme_bw() +
+      labs(x = "Price", y = "")
+
+    graphs <- ggarrange(hist, dens, violin, boxplot, ncol = 2, nrow = 2)
+    annotate_figure(graphs, top = text_grob("Freight Index"))
+```
+
+```{r,warning=FALSE}
+#| echo: false
+#| code-fold: true
+hist + violin + dens + boxplot
+```
+
+Let's Plot a Linear Regression line to understand a general trend
+
+```{r,warning=FALSE}
+#| echo: false
+#| code-fold: true
+line_chart <- freight_train %>%
+  ggplot() +
+  geom_line(aes(Date,Value)) +
+  theme_bw() +
+  xlab("Month/Year") +
+  ylab("Freight Index")
+
+line_chart +
+  geom_smooth(aes(Date,Value), method = "lm", color = "red")
+
+```
+
+Let's see the summary statistics of the variable under observation
+
+```{r,warning=FALSE}
+
+#| echo: true
+#| code-fold: true
+
+summary(freight_train$Value)
+```
+
+| Statistic | Value |
+|-----------|-------|
+| Min       | 0.851 |
+| 1st Qu    | 0.999 |
+| Median    | 1.063 |
+| Mean      | 1.071 |
+| 3rd Qu    | 1.141 |
+| Max       | 1.347 |
+
+**Visualization of a moving average of the time series**
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+freight_ma <- freight_train %>%
+  arrange(Date) %>%
+  mutate(
+    ma_13_left = rollapply(
+      Value,
+      13,
+      FUN = mean,
+      align = "left", fill = NA
+    ),
+    ma_13_right = rollapply(
+      Value,
+      13,
+      FUN = mean,
+      align = "right", fill = NA
+    ),
+    ma_13_center = rollapply(
+      Value,
+      13,
+      FUN = mean,
+      align = "center", fill = NA
+    )
+  ) %>%
+  mutate(
+    value_ma_3 = rollapply(Value, 3, FUN = mean, align = "center", fill = NA),
+    value_ma_5 = rollapply(Value, 5, FUN = mean, align = "center", fill = NA),
+    value_ma_7 = rollapply(Value, 7, FUN = mean, align = "center", fill = NA),
+    value_ma_13 = rollapply(Value, 13, FUN = mean, align = "center", fill = NA),
+    value_ma_25 = rollapply(Value, 25, FUN = mean, align = "center", fill = NA),
+    value_ma_49 = rollapply(Value, 49, FUN = mean, align = "center", fill = NA)
+  )
+
+freight_ma_pivot <- freight_ma %>%
+  pivot_longer(
+    cols = ma_13_left:value_ma_49,
+    values_to = "value_ma",
+    names_to = "ma_order"
+  ) %>%
+  mutate(ma_order = factor(
+    ma_order,
+    levels = c(
+      "ma_13_center",
+      "ma_13_left",
+      "ma_13_right",
+      "value_ma_3",
+      "value_ma_5",
+      "value_ma_7",
+      "value_ma_13",
+      "value_ma_25",
+      "value_ma_49"
+    ),
+    labels = c(
+      "ma_13_center",
+      "ma_13_left",
+      "ma_13_right",
+      "value_ma_3",
+      "value_ma_5",
+      "value_ma_7",
+      "value_ma_13",
+      "value_ma_25",
+      "value_ma_49"
+    )
+  ))
+
+#Finding the alignment
+freight_ma_pivot %>%
+  filter(
+    ma_order %in% c(
+      "ma_13_center",
+      "ma_13_left",
+      "ma_13_right"
+    )
+  ) %>%
+  mutate(ma_order = case_when(
+  ma_order=='ma_13_center'~'Center',
+  ma_order=='ma_13_left'~'Left',
+  ma_order=='ma_13_right'~'Right')) %>%
+  ggplot() +
+  geom_line(aes(Date, Value), size = 1) +
+  geom_line(aes(Date, value_ma, color = ma_order), size = 1) +
+  scale_color_discrete(name = 'Alignment')+
+  theme_bw()+
+  ylab('Freight Index')
+
+# Finding the Order
+freight_ma_pivot %>%
+  filter(
+    !ma_order %in% c(
+      "ma_13_center",
+      "ma_13_left",
+      "ma_13_right",
+      "value_ma_7",
+      "value_ma_49"
+    )
+  ) %>%
+  mutate(ma_order = case_when(
+    ma_order=='value_ma_3'~'3rd Order',
+    ma_order=='value_ma_5'~'5th Order',
+    ma_order=='value_ma_13'~'13th Order',
+    ma_order=='value_ma_25'~'25th Order')
+  ) %>%
+  mutate(
+    ma_order = factor(
+      ma_order,
+      labels = c('3rd Order',
+      '5th Order',
+      '13th Order',
+      '25th Order'),
+      levels = c('3rd Order',
+      '5th Order',
+      '13th Order',
+      '25th Order')
+    )
+  ) %>%
+  ggplot() +
+  geom_line(aes(Date, Value), size = 1) +
+  geom_line(aes(Date, value_ma, color = ma_order), size = 1) +
+    scale_color_discrete(name = 'MA Order')+
+  theme_bw()+
+  ylab('Freight Index')
+```
+
+From this we can see after careful observation that ma_center 13 fits our data set perfectly
+
+**An assessment of seasonality using at time-series decomposition and other visualizations as necessary (if seasonality is present)**
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+freight_decom <- freight_train %>%
+  drop_na() %>% 
+  mutate(
+    ma_13_center = rollapply(
+      Value,
+      13,
+      FUN = mean,
+      align = "center", fill = NA
+    )
+  ) %>%
+  mutate(resid = Value - ma_13_center) %>% 
+  select(Date, Value, ma_13_center, resid)
+```
+
+```{r}
+#| echo: false
+#| code-fold: true
+freight_decomp_plot <- freight_decom %>%
+  drop_na() %>% 
+  pivot_longer(
+    Value:resid,
+    names_to = "decomposition",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    decomposition = case_when(
+      decomposition == "Value" ~ "Freight Index",
+      decomposition == "ma_13_center" ~ "Trend",
+      decomposition == "resid" ~ "Remainder"
+    )
+  ) %>%
+  mutate(
+    decomposition = factor(
+      decomposition,
+      labels = c(
+        "Freight Index",
+        "Trend",
+        "Remainder"
+      ),
+      levels = c(
+        "Freight Index",
+        "Trend",
+        "Remainder"
+      )
+    )
+  ) %>%
+  ggplot() +
+  geom_line(aes(Date, Value), size = 1)+
+  facet_wrap(
+    ~decomposition,
+    nrow = 3,
+    scales = "free"
+  ) +
+  theme_bw() +
+  ylab("") +
+  xlab("Date") +
+  ggtitle(
+    "Freight Decomposition = Trend + Remainder"
+  )
+```
+
+```{r}
+#| echo: false
+#| code-fold: true
+freight_decomp_plot
+```
+
+Let's do a NAIVE forecast and SNAIVE forecast cause we've seasonality associated with our data
+
+```{r}
+freight_train <- freight_train %>% drop_na() %>% as_tsibble(index=Date)
+```
+
+```{r,warning=FALSE}
+#| echo: false
+#| code-fold: true
+freight_10 <- freight_train %>%
+mutate(Date = yearmonth(Date)) %>%
+as_tsibble(index = Date)
+
+
+freight_10%>% model(classical_decomposition(Value ~ season(12))) %>%
+components() %>% 
+autoplot(colour = "turquoise4") +
+theme_bw()
+```
+
+#### NAIVE forecast
+
+```{r,warning=FALSE}
+#| echo: false
+#| code-fold: true
+naive_mod <- freight_train %>%
+  fill_gaps() %>% 
+  model(
+    naive = NAIVE(Value),
+    drift = NAIVE(Value~drift())
+  ) %>%
+  forecast(h=36) %>%
+  autoplot(freight_train)
+
+naive_mod
+```
+
+If we observe carefully, we see a hint of red/blue color indicating the forecast, this definitely not a good forecast
+
+### Section 2
+
+Let's look at our data to find out seasonality components of Freight Index
+
+```{r}
+#| echo: true
+#| code-fold: true
+
+freight_roll <- freight_train %>%
+  mutate(
+    value_mean = zoo::rollmean(
+      Value, 
+      k = 4, 
+      fill = NA),
+    value_sd = zoo::rollapply(
+      Value, 
+      FUN = sd, 
+      width = 4, 
+      fill = NA)
+  )
+
+# install.packages("zoo")
+library(zoo)
+
+freight_rollmean <- freight_roll %>%
+  ggplot() +
+    geom_line(aes(Date, Value)) +
+  geom_line(aes(Date, value_mean),color='blue') +
+  theme_bw() +
+  ggtitle("Freight Index mean over time (1 year rolling window)") +
+  ylab("Freight Index") +
+  xlab("Month/Year")
+
+freight_rollmean
+```
+
+The data is not mean stationary
+
+Let's check for variance stationarity
+
+```{r,warning=FALSE}
+
+#| echo: true
+#| code-fold: true
+
+freight_rollsd <- freight_roll %>%
+  ggplot() +
+  geom_line(aes(Date, value_sd)) +
+  geom_smooth(aes(Date,value_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Freight Standard Deviation over Time (1 year rolling window)") +
+  ylab("Freight") +
+  xlab("Month/Year")
+
+freight_rollsd
+
+```
+
+From the above graph we can confirm that the data is not variance stationary, this tells us that our data is not variance stationary and now we need to make this series mean and variance stationary
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+
+library(forecast)
+
+freight_trans <- freight_train %>%
+  mutate(value_log = log1p(Value)) %>%
+  mutate(value_boxcox = forecast::BoxCox(Value, lambda = "auto"))
+
+freight_trans %>%
+  ggplot() +
+  geom_line(aes(Date, value_boxcox),color='blue') +
+  theme_bw() +
+  ggtitle("Freight Index over Time (Box-Cox)") +
+  ylab("Freight value Transformed") +
+  xlab("Month/Year")
+
+freight_trans %>%
+  ggplot() +
+  geom_line(aes(Date, value_log),color='red') +
+  theme_bw() +
+  ggtitle("Freight Index over Time (log)") +
+  ylab("Freight Index value Transformed") +
+  xlab("Month/Year")
+```
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+freight_roll <- freight_trans %>%
+  mutate(
+    value_mean = zoo::rollmean(
+      value_boxcox, 
+      k = 12, 
+      fill = NA),
+    value_sd = zoo::rollapply(
+      value_boxcox, 
+      FUN = sd, 
+      width = 12, 
+      fill = NA)
+  )
+
+freight_rollsd <- freight_roll %>%
+  ggplot() +
+  geom_line(aes(Date, value_sd)) +
+  geom_smooth(aes(Date,value_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Box-cox transformed Freight Index Standard Deviation over Time (1 year rolling window)") +
+  ylab("Freight Index (Transformed)") +
+  xlab("Month/Year")
+
+freight_rollsd
+
+freight_roll <- freight_trans %>%
+  mutate(
+    value_mean = zoo::rollmean(
+      value_log, 
+      k = 12, 
+      fill = NA),
+    value_sd = zoo::rollapply(
+      value_log, 
+      FUN = sd, 
+      width = 12, 
+      fill = NA)
+  )
+
+freight_rollsd <- freight_roll %>%
+  ggplot() +
+  geom_line(aes(Date, value_sd)) +
+  geom_smooth(aes(Date,value_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Log transformed Freight Index Standard Deviation over Time (1 year rolling window)") +
+  ylab("Freight Index (Transformed)") +
+  xlab("Month/Year")
+
+freight_rollsd
+```
+
+From the above two graphs we can see the trend/pattern looks the same, but for the variance stationarity aspect box_cox has done a better job. So, we will consider the box_cox transformation moving forward
+
+Now, let's look at the mean stationarity of the data to see if we need to reduce it and if yes how further
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+freight_rollmean <- freight_roll %>%
+  ggplot() +
+  geom_line(aes(Date, freight_roll$value_boxcox)) +
+  geom_line(aes(Date, freight_roll$value_mean),color='red') +
+  theme_bw() +
+  ggtitle("Transformed Freight Index mean over time (1 year rolling window)") +
+  ylab("Freight Index (Transformed)") +
+  xlab("Month/Year")
+
+freight_rollmean
+
+```
+
+We see that there's some seasonality associated with the data, let's difference it to see if we find the mean stationarity
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+freight_diff <- freight_train %>%
+  mutate(value_diff = Value - lag(Value, n = 12)) %>%
+  as_tsibble(index=Date)
+
+
+freight_diff %>%
+  ggplot() +
+  geom_line(aes(Date, value_diff)) +
+  theme_bw() +
+  ggtitle("Transformed Freight Index (First Difference)") +
+  ylab("Transformed Freight Index value (Difference)") +
+  xlab("Month/Year")
+```
+
+This plot looks ok, it seems like there's still seasonality left. Let's check the variance stationarity again with a rolling SD once before we do the KPSS tes
+
+Now, the variance looks stationary post differencing, let's do the KPSS test
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+
+
+freight_diff %>% 
+  features(value_diff,unitroot_kpss)
+```
+
+The KPSS value of 0.1 indicates that the series is mean stationary
+
+Now, let's look at ACF and PACF plots before moving to ARIMA
+
+freight_train \<- freight_train %\>% drop_na() %\>% as_tsibble(index=Date)
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+# freight_train <- freight_train %>% drop_na() %>% as_tsibble(index=Date)
+```
+
+```{r,warning=FALSE}
+#| echo: true
+#| code-fold: true
+# freight_train %>%
+#   ACF(difference((Value), 12)) %>%
+#   autoplot() +
+# freight_train %>%
+#   PACF(difference(log(Value), 12)) %>%
+#   autoplot()
+
+freight_diff %>%
+na.omit() %>% 
+as_tsibble(index = Date) %>% 
+fill_gaps() %>% 
+gg_tsdisplay(value_diff,
+plot_type='partial', lag=36) +
+labs(title="Differenced for Mean Stationarity", y = "")
+# par(mfrow = c(1, 2))
+# acf(freight_roll$value_boxcox,na.action = na.pass)
+# pacf(freight_roll$value_boxcox, na.action = na.pass)
+```
+
+This seems like a AR process, with high levels of correlation, let's try to fit in using different models and later validate our hypothesis
+
+```{r}
+#| echo: true
+#| code-fold: true
+models_bic = freight_roll %>%
+  model(
+    mod1 = ARIMA(value_boxcox~pdq(0,1,0)+PDQ(0,0,0)),
+    mod2 = ARIMA(value_boxcox~pdq(0,1,1)+PDQ(0,0,0)),
+    mod3 = ARIMA(value_boxcox~pdq(1,1,0)+PDQ(0,0,0)),
+    mod4 = ARIMA(value_boxcox~pdq(2,1,0)+PDQ(0,0,0)),
+    mod5 = ARIMA(value_boxcox~pdq(2,1,1)+PDQ(0,0,0)),
+    mod6 = ARIMA(value_boxcox~pdq(3,1,2)+PDQ(0,0,0))
+  )
+
+models_bic %>%
+  glance() %>%
+  arrange(BIC)
+```
+
+Based on our interpreted model we see that it looks like it's a ARIMA(0,1,1), let's look at the residual of the best model we've selected
+
+```{r}
+#| echo: true
+#| code-fold: true
+
+best_mod = freight_roll %>%
+  model(
+    ARIMA(value_boxcox,approximation=F) # Didn't set stepwise here because of size of the data
+  )
+
+best_mod %>%
+  gg_tsresiduals()
+```
+
+Here the trend looks like a white noise, based on the ACF and PACF plots provided above we can say it's an AR process and our best model indicates its an AR 0 process, this indicates the model we choose is not correct. Let's do a Ljung's box test to find out further
+
+#### Ljung's box test
+
+```{r}
+#| echo: true
+#| code-fold: true
+
+best_mod %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 5, dof = 1)
+```
+
+This p-value looks insignificant showing that there's still some autocorrelation left
+
+#### Fitting AutoArima to find the order of our timeseries
+
+```{r}
+freight_auto_arima = auto.arima(freight_trans$value_boxcox,approximation=F,stepwise=F,seasonal=F,allowdrift=F)
+
+summary(freight_auto_arima)
+```
+
+#### ARIMA forecast
+
+```{r,warning=FALSE}
+
+arima_mod = freight_train %>%
+  model(
+    mod1 = ARIMA(Value, approximation = F)
+  )
+
+arima_mod %>%
+  forecast(h = 12) %>%
+  autoplot(freight_train) +
+  labs(title = "ARIMA Forecast of Freight Index",
+       x = "Month/Year",
+       y = "Freight Index") +
+  scale_color_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.position = "bottom")
+```
+
+### Section 3: Facebook Prophet Model
+
+```{r}
+#| include: false
+knitr::opts_chunk$set(
+  fig.align = "center"
+)
+
+library(tidyverse)
+library(rmarkdown)
+library(gapminder)
+library(janitor)
+library(lubridate)
+library(scales)
+library(gt)
+library(patchwork)
+library(kableExtra)
+library(data.table)
+library(corrplot)
+library(forecast)
+library(zoo)
+library(dplyr)
+library(tseries) # For ADF/KPSS tests
+library(tsibble)
+library(fable)
+library(feasts)
+# install.packages("fredr")
+library(fredr)
+```
+
+```{r,warning=FALSE}
+library(dplyr)
+library(fable.prophet)
+library(ggplot2)
+library(scales)
+
+freight_train %>%
+filter(Date<=ymd('2015-01-01')) %>%
+    model(prophet = prophet(Value)) %>%
+    forecast(h=12) %>%
+    autoplot(freight_train %>% bind_rows(freight_test))+
+    ylab('Freight Index')+
+    xlab('Month')+
+    theme_bw()
+```
+
+```{r,warning=FALSE}
+library(dplyr)
+library(fable.prophet)
+library(ggplot2)
+library(scales)
+
+prophet_data = freight %>%
+    rename(ds = Date, # Have to name our date variable "ds"
+    y = Value)  # Have to name our time series "y"
+
+train = prophet_data %>%  # Train set
+  filter(ds<ymd("2018-01-01"))
+
+test = prophet_data %>% # Test set
+  filter(ds>=ymd("2018-01-01"))
+```
+
+```{r,warning=FALSE}
+orig_model = prophet::prophet(train)
+```
+
+```{r,warning=FALSE}
+ # Train Model
+orig_future = prophet::make_future_dataframe(orig_model,periods = 12) # Create future dataframe for predictions
+orig_forecast = predict(orig_model,orig_future) # Get forecast
+```
+
+#### Fitting Initial Prophet model and time series decomposition
+
+```{r,warning=FALSE}
+
+orig_model <- prophet::prophet(prophet_data) # Train Model
+
+orig_future <-  prophet::make_future_dataframe(orig_model,periods = 156, freq = "months") # Create future dataframe for predictions
+
+orig_forecast <-  predict(orig_model,orig_future) # Get forecast
+
+plot(orig_model,orig_forecast)+prophet::add_changepoints_to_plot(orig_model)+
+ylab("Freight Index")+xlab("Month/Year")+theme_bw()+
+  labs(
+        x = "Month/Year",
+        y = "Freight Index",
+        title = "Initial forecast with Prophet"
+      ) 
+```
+
+In the above model the change points identified are
+
+```{r,warning=FALSE}
+prophet::prophet_plot_components(orig_model,orig_forecast) 
+```
+
+#### Seasonality
+
+```{r}
+additive = prophet(train)
+add_fcst = predict(additive,orig_future)
+
+plot(additive,add_fcst)
+```
